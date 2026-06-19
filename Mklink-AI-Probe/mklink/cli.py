@@ -1304,20 +1304,33 @@ def _cli_flush_memory(
             return
 
     # 2) 构造 PikaScript 命令字符串
-    # 实测 (2026-06): PikaScript 的 cmd.flush_memory() 同时支持两种调用形态:
-    #   - 旧协议 (单地址多字节):  cmd.flush_memory(addr, b1, b2, ...)        — 1~16 字节稳定 PASS
-    #   - 新协议 (多地址):        cmd.flush_memory([(a1, bytes([...])), ...])  — 多地址场景
-    # 单项时优先用旧协议(更可靠),多项时只能用新协议。
-    if len(parsed) == 1:
-        addr_int, byte_list = parsed[0]
-        byte_csv = ", ".join(f"0x{b:02X}" for b in byte_list)
-        flush_cmd = f"cmd.flush_memory(0x{addr_int:08X}, {byte_csv})"
-    else:
-        tuple_strs = []
-        for addr_int, byte_list in parsed:
+    # 实测 (2026-06) 死锁根因：命令字符串总长度超固件 PIKA_LINE_BUFF（实测 ~600 字符即触发），
+    # 触发 PikaScript SyntaxError → REPL 挂起 → 端口持久死锁（需物理复位）。
+    # varargs 旧协议 cmd.flush_memory(addr, b1, ...) 另有 ≤20 字节的参数个数上限。
+    # 修复策略（fail-safe，三层）：
+    #   1) 统一用 batch 协议 cmd.flush_memory([(addr, data), ...])（文档 2.3），避开 varargs 参数上限；
+    #   2) 全相同字节自动用短表达式 bytes([0xVV])*N（文档 2.5），命令串极短，可写 ≤12KB；
+    #   3) 非重复数据展开为 bytes([..]) 字面量，并对命令串总长度做校验，超限拒绝并提示分块。
+    MAX_FLUSH_CMD_LEN = 230  # 实测边界：32B展开(233字符)OK / 40B(281字符)触发瞬时CDC异常(自愈)
+    tuple_strs = []
+    for addr_int, byte_list in parsed:
+        if byte_list and all(b == byte_list[0] for b in byte_list):
+            # 全相同字节：短表达式，规避 PIKA_LINE_BUFF（可一次写 ≤12KB）
+            data_expr = f"bytes([0x{byte_list[0]:02X}])*{len(byte_list)}"
+        else:
             byte_csv = ", ".join(f"0x{b:02X}" for b in byte_list)
-            tuple_strs.append(f"(0x{addr_int:08X}, bytes([{byte_csv}]))")
-        flush_cmd = f"cmd.flush_memory([{', '.join(tuple_strs)}])"
+            data_expr = f"bytes([{byte_csv}])"
+        tuple_strs.append(f"(0x{addr_int:08X}, {data_expr})")
+    flush_cmd = f"cmd.flush_memory([{', '.join(tuple_strs)}])"
+
+    if len(flush_cmd) > MAX_FLUSH_CMD_LEN:
+        total_bytes = sum(len(bl) for _, bl in parsed)
+        print(f"[FAIL] 单次写入过大：命令串 {len(flush_cmd)} 字节 > 安全上限 {MAX_FLUSH_CMD_LEN}。")
+        print(f"       {len(parsed)} 个地址 / 共 {total_bytes} 字节（非重复数据展开为字面量）。")
+        print(f"       超长命令会触发固件 PIKA_LINE_BUFF 溢出 → REPL 挂起 → 端口死锁（需拔插复位）。")
+        print(f"       请分块：每块 ≤ 30 字节展开（实测 32B 安全）/ ≤8 地址项，每批等 REPL 返回 >>> 再发下一批；")
+        print(f"       全相同字节（清零/填 0xFF 等）已自动用短表达式，可一次写 ≤12KB。")
+        return
 
     # 3) 连接并执行
     port = _resolve_port(port)

@@ -9,29 +9,27 @@
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vue.js&logoColor=white)](https://vuejs.org)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-[功能概览](#功能概览) · [快速开始](#快速开始) · [高速内存协议](#高速内存协议-dump-memory--flush-memory) · [探针固件](#探针固件-mk-firmware) · [命令速查](#命令速查) · [架构](#架构)
+[English](#features) · [快速开始](#快速开始) · [命令速查](#命令速查) · [架构](#架构) · [开发构建](#开发构建)
 
 </div>
 
 ---
 
-## 功能概览
+## Features
 
 | 功能 | 说明 |
 |------|------|
 | **固件烧录** | 一键烧录 Keil/IAR 工程产物（HEX/BIN），自动检测 MCU 与 FLM |
 | **RTT 实时捕获** | SEGGER RTT 数据流捕获，内置波形可视化（RTT View / VOFA+） |
-| **SuperWatch** | 高频变量连续采样与实时 Web 波形图（支持 `--dump-mem` 高速协议） |
-| **高速内存协议** | `dump-memory` 二进制帧采集（固件 B1 自动分块）；`flush-memory` 静默写入 |
-| **内存读写** | RAM / Flash / 寄存器读写，十六进制查看器 |
+| **SuperWatch** | 高频变量连续采样与实时 Web 波形图 |
+| **内存读写** | RAM / Flash / 寄存器 读写操作，十六进制查看器 |
 | **符号与类型** | 通过 DWARF/ELF 解析 AXF 符号表、结构体、枚举定义 |
 | **HardFault 解码** | Cortex-M Fault 寄存器自动解码，addr2line 源码定位 |
 | **Modbus RTU** | 完整 Modbus 调试：扫描、读写、轮询、点表生成、Web Dashboard |
 | **串口调试** | 通用 UART 终端，支持自定义协议 Profile |
-| **探针固件管理** | 内置 V3/V4 匹配 `.uf2`，连接时自动版本检查与升级指引 |
 | **远程 GUI** | FastAPI 后端 + Vue 3 SPA，浏览器即用 |
 | **Tauri 桌面** | Rust 桌面应用，Python sidecar，原生窗口体验 |
-| **AI Agent 集成** | Claude / Cursor / OpenAI Agent 通过 Skill + CLI 直接操控硬件 |
+| **AI Agent 集成** | Claude / OpenAI Agent 可通过 CLI 直接操控硬件 |
 
 ## Screenshots
 
@@ -54,124 +52,62 @@
 
 ## 快速开始
 
-本仓库是一个 **AI Agent Skill**。把本目录交给 AI，它会自动读取 Skill 并完成环境配置。
-
-### 给 AI 的一句话
-
-> 请读取当前 Mklink-AI-Probe 目录，安装 Skill，并帮我初始化嵌入式调试环境。
-
-### AI 会做什么
-
-1. 读取 [`SKILL.md`](SKILL.md) — 命令路由与 Agent 约束
-2. 按 [`references/install.md`](references/install.md) 安装 `mklink` Python 包
-3. 根据意图查阅 `references/` 文档，执行 `python -m mklink <command>`
-
-### 典型工作流
+### 安装
 
 ```bash
-python -m mklink project-init   # 检测工程、MCU、COM 口，并校验探针固件版本
-python -m mklink flash          # 烧录固件
+# 安装 Python 包（可编辑模式）
+pip install -e .
+
+# 安装 GUI 依赖（可选）
+pip install -e ".[gui]"
+```
+
+### 三步上手
+
+```bash
+# 1. 初始化项目（自动检测 Keil/IAR 工程、MCU 型号、COM 口）
+python -m mklink project-init
+
+# 2. 烧录固件
+python -m mklink flash
+
+# 3. 捕获 RTT 实时数据
 python -m mklink rtt --duration 10
 ```
 
-启动 GUI：`python -m mklink gui` 或 `cd gui && npx tauri dev`。
-
-> 手动安装见 [references/install.md](references/install.md)。
-
-## 高速内存协议（dump-memory / flush-memory）
-
-V3.3.1 / V4.3.1 探针固件新增 `cmd.dump_memory` 与 `cmd.flush_memory` 公共 API，适合 SuperWatch 高频采样、压力测试、与目标固件并发读写。
-
-### dump-memory — 高速采集（固件侧自动分块）
-
-调用固件 `cmd.dump_memory(addr, size, ..., period)`，返回 `MPMDMPMD` 魔数的二进制帧。CLI 进入流模式解析，默认只采 1 个样本（`--frames 1 --duration 2`），避免串口长期占用。
-
-| 协议 | 触发条件 | 说明 |
-|------|----------|------|
-| **OLD** | 单次总量 ≤ 2048 B | 单帧返回全部 region 数据 |
-| **B1** | 单次总量 > 2048 B | 固件按 **2048 B/block** 自动分块传输；CLI 重组各 block 后计为 1 个完整样本 |
-
-要点：
-
-- 单次调用上限 **32 KiB**（多 region 合计）；更大范围需在 host 侧拆成多次命令
-- 支持最多 **16 个 region**，格式 `ADDR:SIZE`；`--period` 控制周期采样
-- B1 帧带 `block_index` / `block_count` / `block_crc32`，CLI 等到最后一块才算样本完成
-- SuperWatch 的 `--dump-mem` 模式优先走此协议，不支持时回退 `read_ram` 轮询
+### 启动 GUI
 
 ```bash
-# 读取 16 字节 RAM（OLD 帧）
-python -m mklink dump-memory 0x20000000:16
+# 浏览器模式
+python -m mklink gui
 
-# 读取 2049 字节 Flash（触发 B1 分块）
-python -m mklink dump-memory 0x08020000:2049
-
-# 双 region 周期采样，JSON 逐帧输出
-python -m mklink dump-memory 0x20000000:16 0x20001000:4 --period 0.01 --frames 10 --json
+# Tauri 桌面应用（需额外依赖，见开发构建）
+cd gui && npx tauri dev
 ```
-
-### flush-memory — 静默写入（适合与 dump 并发）
-
-调用固件 `cmd.flush_memory()`，成功时**不输出 hexdump**，只回显命令 + `>>>`，不会污染 `dump-memory` 的二进制流（`write-ram` 的预览会打断帧解析）。
-
-| 场景 | PikaScript 形态 | 推荐边界 |
-|------|-----------------|----------|
-| 单地址 | `cmd.flush_memory(addr, b0, b1, ...)` | 1~16 字节稳定（varargs 上限约 20 B） |
-| 多地址 | `cmd.flush_memory([(addr, bytes([...])), ...])` | ≤ 8 个地址项，单块 ≤ 12 KB |
-
-```bash
-# 单地址多字节（走旧协议，最稳定）
-python -m mklink flush-memory 0x20010000:0xDE,0xAD,0xBE,0xEF
-
-# 多地址一次提交（单笔 MCU-RTT 往返）
-python -m mklink flush-memory 0x20010000:0x11,0x22 0x20010100:0x44,0x55,0x66
-
-# 写后回读校验；周期重复写（压力测试）
-python -m mklink flush-memory 0x20010000:0x55 --verify --repeat 100 --interval-ms 10
-```
-
-> CLI **不自动分块**——超出 12 KB / 8 地址项时需自行拆分多次调用。完整边界与分块策略见 [references/flush-memory.md](references/flush-memory.md)；内存命令总览见 [references/commands-memory.md](references/commands-memory.md)。
-
-## 探针固件（MK-Firmware）
-
-仓库自带与 CLI/GUI 版本匹配的烧录器固件：
-
-| 文件 | 适用探针 |
-|------|----------|
-| `MK-Firmware/MicroLink_V3.3.1.uf2` | MicroLink V3 |
-| `MK-Firmware/MicroLink_V4.3.1.uf2` | MicroLink V4 |
-
-`mklink/firmware_check.py` 在 `project-init` 和 GUI 连接时自动检查探针版本：
-
-- 读取 `cmd.get_version()`，与 `MK-Firmware/` 中最低版本比对
-- 版本过低时提示升级，并推荐**同 major 号**（V3→V3、V4→V4）的 `.uf2` 文件及操作步骤
-- 可通过环境变量 `MKLINK_FIRMWARE_DIR` 覆盖固件目录
-
-```bash
-python -m mklink version          # 查看当前探针固件版本
-python -m mklink version --all    # 含历史版本记录
-```
-
-`dump-memory` / `flush-memory` 需要 V3.3.1 / V4.3.1 及以上探针固件；旧版探针请按提示拖入对应 `.uf2` 升级。
 
 ## 命令速查
 
 | 命令 | 说明 |
 |------|------|
-| `project-init` / `project-info` | 初始化 / 查看项目配置（含探针固件检查） |
+| `project-init` | 初始化项目配置（自动检测 Keil/IAR、MCU、COM 口） |
 | `flash` | 一站式烧录（连接 → IDCODE → FLM → 烧录） |
-| `version` | 读取烧录器固件版本 |
-| `rtt` / `rtt-integrate` / `rtt-find` | RTT 捕获 / 源码集成 / 地址查找 |
-| `read-ram` / `write-ram` / `read-flash` / `read-reg` | 内存与寄存器读写 |
-| `dump-memory` (`dump`) | 高速二进制帧采集（B1 自动分块，别名 `dump`） |
-| `flush-memory` | 静默写 RAM，适合与 dump 并发 |
-| `vofa` / `watch` / `superwatch` | 变量观测与高频采样 |
-| `symbols` / `typeinfo` / `memmap` | AXF 符号、DWARF 类型、段表分析 |
+| `rtt` | RTT 实时捕获（支持 `--visualize`） |
+| `read-ram` | 读取 RAM 数据（十六进制 dump） |
+| `write-ram` | 写入 RAM 并回读验证 |
+| `read-flash` | 读取 Flash 数据 |
+| `read-reg` | 读取内存映射寄存器 |
+| `vofa` | VOFA+ 实时变量观测 |
+| `watch` | 按变量名读取快照（支持 `struct.field`） |
+| `superwatch` | 高频连续采样（支持 `--visualize`） |
+| `symbols` | 从 AXF/ELF 列出 RAM 变量符号 |
+| `typeinfo` | DWARF 类型查询（结构体/枚举） |
 | `hardfault` | Cortex-M Fault 寄存器解码 |
-| `modbus` / `serial` | Modbus RTU / 通用串口调试 |
-| `resources` | 本地资源管理（释放 stale 串口锁） |
-| `serve` / `gui` | 远程 API 服务 / Web GUI |
-| `discover` / `test` | 发现探针端口 / 连接测试 |
-| `halt` / `resume` / `step` / `break` | CPU 调试控制 |
+| `memmap` | AXF 段表分析（RAM/Flash 占用） |
+| `modbus` | Modbus RTU 调试（scan/read/write/poll/dashboard） |
+| `serial` | 通用串口调试 |
+| `serve` | 远程调试 REST API 服务器 |
+| `gui` | 启动 Web GUI（FastAPI + Vue） |
+| `discover` | 发现 MKLink 探针端口 |
 
 完整命令文档见 [references/](references/) 目录。
 
@@ -192,7 +128,7 @@ python -m mklink version --all    # 含历史版本记录
 │         MKLink 探针 (USB CDC)               │
 │              SWD / JTAG                     │
 ├─────────────────────────────────────────────┤
-│         目标 MCU (ARM Cortex 内核)           │
+│         目标 MCU (Cortex-M)                 │
 └─────────────────────────────────────────────┘
 ```
 
@@ -200,6 +136,11 @@ python -m mklink version --all    # 含历史版本记录
 
 - **CLI 模式** — `python -m mklink <command>`，适合脚本化和 AI Agent 集成
 - **GUI 模式** — 浏览器或 Tauri 桌面窗口，可视化操作
+
+**两种服务后端：**
+
+- **FastAPI**（主模式）— REST API + SSE 流 + WebSocket JSON-RPC，托管 Vue SPA
+- **Raw Socket**（旧版）— 仅 WebSocket JSON-RPC
 
 ## 开发构建
 
@@ -251,29 +192,35 @@ pytest _maintainer/testing/tests/e2e/hil -q --run-hil
 
 ## 支持的 MCU
 
-支持所有 **ARM Cortex 内核** MCU，通过 MKLink 探针 SWD/JTAG 连接，不限于特定厂商或型号。
+通过 `mklink/mcu_profiles.json` 管理，支持主流 Cortex-M 系列：
 
-- 探针自动读取 IDCODE，匹配烧录算法（FLM）
-- `mklink/mcu_profiles.json` 管理内存映射与 Flash 参数，可按需扩展
-- 已内置 ST、Nationstech、GD、MM32 等常用型号配置
+- Nationstech N32G435/G455/G457
+- ST STM32F103/F407/F429/H743
+- GD32F103/F407/E230
+- MM32F327X
+- 更多持续添加中...
 
 ## 项目结构
 
 ```
-.
-├── SKILL.md                 # AI Agent Skill 入口
-├── agents/                  # OpenAI Agent 配置
+mklink-flash/
 ├── mklink/                  # 核心 Python 包
+│   ├── bridge.py            # 串口通信核心
+│   ├── device.py            # 设备抽象层
 │   ├── cli.py               # CLI 命令调度
-│   ├── dump_memory.py       # dump_memory 二进制帧解析（OLD + B1）
-│   ├── firmware_check.py    # 探针固件版本检查
-│   ├── flash.py / rtt.py / superwatch.py
+│   ├── flash.py             # 固件烧录
+│   ├── rtt.py               # RTT 功能
+│   ├── superwatch.py        # 高频变量监控
+│   ├── hardfault.py         # Fault 解码
 │   ├── remote/              # FastAPI 远程服务
-│   ├── modbus/ / serial/
+│   ├── modbus/              # Modbus RTU
+│   └── serial/              # 串口通信
 ├── gui/                     # Vue 3 + Tauri GUI
-├── references/              # 命令与安装文档（AI 按需读取）
-├── MK-Firmware/             # MicroLink V3/V4 匹配固件 (.uf2)
-└── scripts/                 # 示例脚本
+│   ├── src/                 # 前端源码
+│   └── src-tauri/           # Rust 后端
+├── references/              # 命令文档
+├── scripts/                 # 示例脚本
+└── agents/                  # AI Agent 配置
 ```
 
 ## License
